@@ -1,0 +1,16 @@
+{
+  "_comment": "Standard MMD A-pose arm directions (arms at ~45 degrees downward). Used as fallback when align_arms_to_reference cannot find a target armature in the scene. Directions are in armature-local space (Blender right-handed Z-up), unit length.",
+  "source": "MMD standard A-pose (generic)",
+  "space": "armature_local",
+  "normalized": true,
+  "arms": {
+    "L": {
+      "upper_dir": [0.707107, 0.0, -0.707107],
+      "fore_dir":  [0.707107, 0.0, -0.707107]
+    },
+    "R": {
+      "upper_dir": [-0.707107, 0.0, -0.707107],
+      "fore_dir":  [-0.707107, 0.0, -0.707107]
+    }
+  }
+}

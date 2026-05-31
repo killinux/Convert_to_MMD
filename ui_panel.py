@@ -45,7 +45,8 @@ class OBJECT_PT_skeleton_hierarchy(bpy.types.Panel):
         # 检查活动对象是否为骨架
         obj = context.active_object
         if not obj or obj.type != 'ARMATURE':
-            layout.menu("TOPBAR_MT_file_import", text="Import", icon='IMPORT')
+            layout.operator("object.import_xps", text="导入 XPS 模型", icon='IMPORT')
+            layout.menu("TOPBAR_MT_file_import", text="其他导入", icon='IMPORT')
             return
 
         # 添加带有标签、prop_search用于骨骼和填充按钮的行的函数
@@ -204,12 +205,20 @@ class OBJECT_PT_skeleton_hierarchy(bpy.types.Panel):
         row.prop(scene, "my_enum", expand=True)
         if scene.my_enum == 'option1':
 
+            # 自动 / 一键转换（推荐：无需手动映射）
+            oc_box = layout.box()
+            oc_box.label(text="自动 / 一键", icon='AUTO')
+            row = oc_box.row(align=True)
+            row.scale_y = 1.35
+            row.operator("object.one_click_convert", text="一键转换 XPS→MMD", icon='PLAY')
+            oc_box.operator("object.auto_identify_skeleton", text="自动识别骨架（填充下方槽位）", icon='ZOOM_SELECTED')
+
             row = layout.row(align=True)
             row.prop(scene, "preset_enum", text="")
             row.operator("object.import_preset", text="导入预设")
             row.operator("object.export_preset", text="导出预设")
             row.operator("object.clear_bone_selection", text="", icon='X')
-        
+
             main_col = layout.column(align=True)
             # 全ての親到腰部分
             full_body_box = main_col.box()
@@ -295,7 +304,21 @@ class OBJECT_PT_skeleton_hierarchy(bpy.types.Panel):
             #添加肩P骨骼按钮
             row = secondary_bones_box.row()
             row.operator("object.add_shoulder_p_bones", text="3.添加肩P骨骼", icon='BONE_DATA')
-            
+
+            # XPS 专项修正（VMD 回放质量）
+            xps_fix_box = layout.box()
+            xps_fix_box.label(text="XPS 专项修正", icon='MODIFIER')
+            xps_fix_box.operator("object.transfer_unused_weights", text="转移 unused 骨权重", icon='MOD_VERTEX_WEIGHT')
+            xps_fix_box.operator("object.fix_forearm_bend", text="修正前腕弯曲", icon='BONE_DATA')
+            row = xps_fix_box.row(align=True)
+            row.operator("object.align_arms_to_canonical", text="对齐上臂", icon='BONE_DATA')
+            row.operator("object.align_fingers_to_canonical", text="对齐手指", icon='BONE_DATA')
+            row = xps_fix_box.row(align=True)
+            row.operator("object.swap_twist_weights", text="捩骨权重交换", icon='MOD_VERTEX_WEIGHT')
+            row.operator("object.snap_misaligned_bones", text="Snap 错位骨", icon='SNAP_ON')
+            xps_fix_box.operator("object.fix_shoulder_weights", text="纠正肩部三角肌权重", icon='MOD_VERTEX_WEIGHT')
+            xps_fix_box.operator("object.setup_mmd_grants", text="设置标准付与(导出PMX前)", icon='CONSTRAINT')
+
             # 下部分：通用工具
             general_tools_box = layout.box()
             general_tools_box.label(text="通用工具", icon='TOOL_SETTINGS')
@@ -358,3 +381,15 @@ class OBJECT_PT_skeleton_hierarchy(bpy.types.Panel):
             row = body_rigid_box.row()
             row.scale_y = 1.2
             row.operator("object.build_simple_body_rigid", text="构建简易身体刚体", icon='ADD')
+
+            # 自动物理生成（需先完成 mmd_tools 转换）
+            auto_phys_box = layout.box()
+            auto_phys_box.label(text="自动物理（转换后）", icon='PHYSICS')
+            hint = auto_phys_box.column(align=True)
+            hint.scale_y = 0.75
+            hint.label(text="需先完成第5步 mmd_tools 转换", icon='INFO')
+            auto_phys_box.operator("object.generate_body_rigid_bodies", text="生成身体碰撞刚体", icon='MESH_CAPSULE')
+            row = auto_phys_box.row(align=True)
+            row.operator("object.generate_hair_physics", text="头发物理", icon='OUTLINER_OB_HAIR')
+            row.operator("object.generate_breast_physics", text="胸部物理", icon='MESH_UVSPHERE')
+            auto_phys_box.operator("object.toggle_rigid_body_visibility", text="切换刚体显示", icon='HIDE_OFF')

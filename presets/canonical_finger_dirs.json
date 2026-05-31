@@ -1,0 +1,22 @@
+{
+  "_comment": "Standard MMD A-pose finger directions (first segment of each finger: root -> next). Used as fallback when align_fingers_to_reference cannot find a target armature in the scene. Directions are in armature-local space (Blender right-handed Z-up), unit length. Requires arms already aligned to canonical A-pose (run align_arms_to_reference first).",
+  "source": "measured from Purifier Inase 18 None.pmx rest pose",
+  "space": "armature_local",
+  "normalized": true,
+  "fingers": {
+    "L": {
+      "親指０": [0.535163, -0.748875, -0.390880],
+      "人指１": [0.754613, -0.096521, -0.649032],
+      "中指１": [0.797352, -0.013516, -0.603363],
+      "薬指１": [0.767724,  0.098659, -0.633141],
+      "小指１": [0.740351,  0.204517, -0.640354]
+    },
+    "R": {
+      "親指０": [-0.530982, -0.751680, -0.391196],
+      "人指１": [-0.750186, -0.095519, -0.654291],
+      "中指１": [-0.795482, -0.008955, -0.605911],
+      "薬指１": [-0.763951,  0.102809, -0.637031],
+      "小指１": [-0.745574,  0.192748, -0.637940]
+    }
+  }
+}

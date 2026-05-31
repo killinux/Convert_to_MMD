@@ -24,6 +24,12 @@ from .operators import correct_bones_operator
 from .operators import add_leg_d_bones_operator
 from .operators import add_twist_bone_operator
 from .operators import add_shoulder_p_bones_operator
+from .operators import auto_identify_operator
+from .operators import one_click_operator
+from .operators import xps_fixes_operator
+from .operators import xps_import_operator
+from .operators import mmd_grant_operator
+from .operators import physics_operator
 from .tools import export_bones_info_operator
 from .tools import export_constraints_operator
 from .tools import merge_bones_operator
@@ -47,6 +53,7 @@ def register():
     bpy.utils.register_class(correct_bones_operator.OBJECT_OT_correct_bones)
     bpy.utils.register_class(rename_bones_operator.OBJECT_OT_rename_to_mmd)
     bpy.utils.register_class(complete_bones_operator.OBJECT_OT_complete_missing_bones)
+    bpy.utils.register_class(complete_bones_operator.OBJECT_OT_fix_shoulder_weights)
     bpy.utils.register_class(preset_operator.OBJECT_OT_fill_from_selection_specific)
     bpy.utils.register_class(preset_operator.OBJECT_OT_export_preset)
     bpy.utils.register_class(preset_operator.OBJECT_OT_import_preset)
@@ -69,6 +76,13 @@ def register():
     bpy.utils.register_class(clear_constraints_and_drivers_operator.OBJECT_OT_clear_all_bone_drivers)
     bpy.utils.register_class(auto_connect_parent_bones_operator.OBJECT_OT_auto_connect_parent_bones)
     bpy.utils.register_class(auto_connect_parent_bones_operator.OBJECT_OT_unlock_all_bones)
+    # 注册新增模块（自动识别/一键/XPS修正/导入），各自管理其 operator 类
+    auto_identify_operator.register()
+    one_click_operator.register()
+    xps_fixes_operator.register()
+    xps_import_operator.register()
+    mmd_grant_operator.register()
+    physics_operator.register()
     # 注册动态属性
     bones = preset_operator.get_bones_list()
     properties.register_properties(bones)
@@ -104,6 +118,7 @@ def unregister():
     bpy.utils.unregister_class(export_bones_info_operator.OBJECT_OT_export_selected_bones_info)
     bpy.utils.unregister_class(correct_bones_operator.OBJECT_OT_correct_bones)
     bpy.utils.unregister_class(rename_bones_operator.OBJECT_OT_rename_to_mmd)
+    bpy.utils.unregister_class(complete_bones_operator.OBJECT_OT_fix_shoulder_weights)
     bpy.utils.unregister_class(complete_bones_operator.OBJECT_OT_complete_missing_bones)
     bpy.utils.unregister_class(preset_operator.OBJECT_OT_fill_from_selection_specific)
     bpy.utils.unregister_class(preset_operator.OBJECT_OT_export_preset)
@@ -127,6 +142,13 @@ def unregister():
     bpy.utils.unregister_class(clear_constraints_and_drivers_operator.OBJECT_OT_clear_all_bone_drivers)
     bpy.utils.unregister_class(auto_connect_parent_bones_operator.OBJECT_OT_auto_connect_parent_bones)
     bpy.utils.unregister_class(auto_connect_parent_bones_operator.OBJECT_OT_unlock_all_bones)
+    # 注销新增模块
+    physics_operator.unregister()
+    mmd_grant_operator.unregister()
+    xps_import_operator.unregister()
+    xps_fixes_operator.unregister()
+    one_click_operator.unregister()
+    auto_identify_operator.unregister()
     # 注销动态属性
     bones = preset_operator.get_bones_list()
     properties.unregister_properties(bones)
