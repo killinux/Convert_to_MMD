@@ -650,13 +650,20 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
         cls = self._auto_classify(obj)
 
         if cls:
+            # "unused*" 是 XPS 残留辅助骨。被分类器按位置判为 'twist' 的（如三角肌骨
+            # 'unused bip001 xtra07pp'）本会被保留，但本流程用自建 腕捩1/2/3 处理捩转，
+            # 不消费 XPS 捩/三角肌辅助骨；保留它们会让其携带的肩部权重随手臂捩转带动
+            # 肩膀变形。故把 twist/other 类的 unused 骨也并入最近有效变形骨。
+            # （'preserve' 类的大腿/胸部 unused 骨不在手臂链上，不随捩转动，保持原样。）
             unused_bones = [
                 b for b in obj.data.bones
-                if ((cls.get(b.name) == 'other' and b.name.startswith('unused'))
-                    or cls.get(b.name) == 'merge')
+                if (cls.get(b.name) == 'merge'
+                    or (b.name.startswith('unused') and cls.get(b.name) in ('twist', 'other')))
                 and b.name not in self.STANDARD_MMD_BONES
             ]
-            skipped = [b.name for b in obj.data.bones if cls.get(b.name) in ('twist', 'preserve')]
+            skipped = [b.name for b in obj.data.bones
+                       if cls.get(b.name) == 'preserve'
+                       or (cls.get(b.name) == 'twist' and not b.name.startswith('unused'))]
             control_bones = [b for b in obj.data.bones if b.name in self.CONTROL_BONES]
             print("\n[Transfer unused] 使用 auto-classifier")
         else:
