@@ -83,13 +83,20 @@ def _split_chain_weights(obj, src_name, dst_name, seg_from_name, seg_to_name,
 
 
 def _transfer_shoulder_weight(obj, arm_name, elbow_name, shoulder_name,
-                              zone=0.15, max_frac=0.85):
-    """把 arm 顶点组中位于肩侧（沿 腕→ひじ 轴 t<0，即上臂头之上的三角肌/肩部）
-    的权重按平滑比例转移到 shoulder。
+                              t_hi=0.35, max_frac=0.85):
+    """把 arm 顶点组中肩部/三角肌区域的权重按沿 腕→ひじ 轴的位置平滑转移到 shoulder。
 
     XPS/XNALara 把三角肌绑到"上臂"(shoulder2→腕)，而 MMD/目标绑到锁骨(肩)。
-    不转移会导致手臂弯曲时整块肩部/三角肌跟着上臂转 → 肩膀变形。
-    t∈(-zone,0) 平滑过渡，t<=-zone 转移 max_frac，避免硬缝。返回受影响顶点数。
+    不转移会导致：① 手臂弯曲时整块肩部跟着上臂转；② 关节以下的三角肌随后被
+    add_twist 切分吃到 腕捩1（25%付与）上 → 旋转 腕捩 时肩膀仍变形（本次修复点）。
+
+    转移比例 f(t)（t=沿 腕→ひじ 轴，0=腕头/肩关节，1=肘）：
+      t<=0      : f=max_frac              —— 肩盖/三角肌上部整体归 肩
+      0<t<t_hi  : f=max_frac*(1-t/t_hi)   —— 关节以下三角肌线性递减，t_hi 处归零
+      t>=t_hi   : 不转移                   —— 肘侧交给捩骨系统
+    f 在 t=0 处连续（两侧皆为 max_frac），不会在肩关节留硬缝。曲线按目标 PMX 标定：
+    肩占(肩+腕+腕捩1) 沿 t 约 86%/46%/28%/5%（t=0/0.1/0.2/0.3）。本步骤在 add_twist
+    之前执行，先减薄 腕 再切分捩骨，使三角肌不落到 腕捩1。返回受影响顶点数。
     """
     arm_b = obj.data.bones.get(arm_name)
     el_b = obj.data.bones.get(elbow_name)
@@ -122,9 +129,12 @@ def _transfer_shoulder_weight(obj, arm_name, elbow_name, shoulder_name,
             if w <= 0:
                 continue
             t = ((mesh_mw @ v.co) - o).dot(axis) / L2
-            if t >= 0:
-                continue  # 只处理肩侧
-            f = min(1.0, (-t) / zone) * max_frac
+            if t >= t_hi:
+                continue  # 肘侧：保留在 腕，交给捩骨系统
+            if t <= 0.0:
+                f = max_frac           # 肩盖/三角肌上部：整体归 肩
+            else:
+                f = max_frac * (1.0 - t / t_hi)  # 关节以下：线性递减至 t_hi 归零
             if f <= 1e-4:
                 continue
             plans.append((v.index, w * (1.0 - f), w * f))
@@ -515,10 +525,12 @@ class OBJECT_OT_complete_missing_bones(bpy.types.Operator):
 
 
 class OBJECT_OT_fix_shoulder_weights(bpy.types.Operator):
-    """把上臂(腕)肩侧的三角肌/肩部权重转移到 肩，对齐目标 PMX 的肩部权重。
+    """把上臂(腕)肩部/三角肌权重转移到 肩，对齐目标 PMX 的肩部权重。
 
-    XPS/XNALara 把三角肌绑到上臂(shoulder2→腕)，导致弯臂时肩膀跟着上臂变形。
-    本步骤把 腕 顶点组中沿 腕→ひじ 轴 t<0(上臂头之上)的权重平滑转给 肩。
+    XPS/XNALara 把三角肌绑到上臂(shoulder2→腕)，导致弯臂时肩膀跟着上臂变形，
+    且关节以下的三角肌会被后续 add_twist 切分到 腕捩1 上 → 旋转腕捩时肩膀仍变形。
+    本步骤把 腕 顶点组中沿 腕→ひじ 轴 t<t_hi(肩关节到三角肌止点)的权重按目标曲线
+    平滑转给 肩；必须在 add_twist 之前执行（流程 step 2.7）。
     """
     bl_idname = "object.fix_shoulder_weights"
     bl_label = "纠正肩部三角肌权重"
