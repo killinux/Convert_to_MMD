@@ -19,7 +19,8 @@ PIPELINE_PRE_D = [
     ("1.7", "object.align_fingers_to_canonical", "对齐手指到 A-pose", False),
     ("2", "object.complete_missing_bones", "补全缺失骨骼", True),
     ("2.5", "object.transfer_unused_weights", "清理控制骨权重 (第二次)", False),
-    ("2.7", "object.fix_shoulder_weights", "纠正肩部三角肌权重", False),
+    # 2.7 fix_shoulder_weights 已停用：三角肌(肩盖)现由 transfer_unused 整组路由到 肩
+    # (用户决定 2026-06-06: 忠实复用 XPS 三角肌权重，不再启发式 腕→肩 切分/欠补)。
     ("3", "object.add_mmd_ik", "添加 MMD IK", True),
     ("4", "object.create_bone_group", "创建骨骼集合", True),
     ("5", "object.use_mmd_tools_convert", "mmd_tools 转换", True),

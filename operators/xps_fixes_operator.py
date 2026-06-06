@@ -603,6 +603,73 @@ class OBJECT_OT_snap_misaligned_bones(bpy.types.Operator):
 # Transfer unused bone weights to nearest valid bone
 # ============================================================
 
+def _detect_arm_deltoid(obj, meshes, candidates):
+    """识别"上臂三角肌(肩盖)"辅助骨：权重质心落在上臂近端半段、且贴近手臂轴的
+    unused/辅助骨(如 XPS 的 xtra07pp)。返回 {bone_name: 肩骨名}，供 transfer_unused
+    把它们【整组】路由到该侧 肩。
+
+    XPS 把肩盖三角肌绑在独立辅助骨上，其权重质心在上臂近端；若按"最近骨头"转移会整片
+    倒进 腕(肩关节头最近) → 肩盖跟着上臂转。整组归 肩 = 忠实复用 XPS 三角肌权重、不切分
+    (用户决定: 三角肌整组→肩)。判定: 质心沿 腕→ひじ 轴 t<0.5 且横向距离 < 一节上臂长。
+    """
+    mw = obj.matrix_world
+    sides = []
+    for jp in ('左', '右'):
+        arm = obj.data.bones.get(f"{jp}腕")
+        el = obj.data.bones.get(f"{jp}ひじ")
+        sh = obj.data.bones.get(f"{jp}肩")
+        if arm and el and sh:
+            o = mw @ arm.head_local
+            ax = (mw @ el.head_local) - o
+            L2 = ax.length_squared
+            if L2 > 1e-9:
+                sides.append((jp, o, ax, L2, L2 ** 0.5))
+    if not sides:
+        return {}
+    cand_names = {b.name for b in candidates}
+    acc = {}  # name -> [sum(w*pos) as Vector, sum(w)]
+    for m in meshes:
+        idx2name = {}
+        for name in cand_names:
+            vg = m.vertex_groups.get(name)
+            if vg:
+                idx2name[vg.index] = name
+        if not idx2name:
+            continue
+        mmw = m.matrix_world
+        for v in m.data.vertices:
+            wp = None
+            for g in v.groups:
+                nm = idx2name.get(g.group)
+                if nm and g.weight > 0.001:
+                    if wp is None:
+                        wp = mmw @ v.co
+                    s = acc.get(nm)
+                    if s is None:
+                        acc[nm] = [wp * g.weight, g.weight]
+                    else:
+                        s[0] += wp * g.weight
+                        s[1] += g.weight
+    dest = {}
+    for nm, (sw, w) in acc.items():
+        if w <= 0:
+            continue
+        c = sw / w
+        best = None  # (lateral_dist, jp, t, armlen)
+        for jp, o, ax, L2, alen in sides:
+            t = (c - o).dot(ax) / L2
+            proj = o + ax * max(0.0, min(1.0, t))
+            lat = (c - proj).length
+            if best is None or lat < best[0]:
+                best = (lat, jp, t, alen)
+        lat, jp, t, alen = best
+        # 三角肌：质心沿骨轴 0.05≤t≤0.55（上臂近端~中段）且横向 <半节上臂长（紧贴手臂）。
+        # 排除：肩关节后方/上方的 头/颈/根(t<0)、肘侧捩骨(t>0.55)、横向远离的 胸/控制骨。
+        if 0.05 <= t <= 0.55 and lat < 0.5 * alen:
+            dest[nm] = f"{jp}肩"
+    return dest
+
+
 class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
     """把 unused 骨和非变形控制骨的权重转移到最近的有效变形骨。"""
     bl_idname = "object.transfer_unused_weights"
@@ -694,21 +761,30 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
 
         valid_heads = [(b, obj.matrix_world @ b.head_local) for b in valid_deform_bones]
 
+        # 三角肌(肩盖)忠实路由：整组归该侧 肩(见 _detect_arm_deltoid)，不按最近骨头打散。
+        deltoid_dest = _detect_arm_deltoid(obj, mesh_objects, bones_to_transfer)
+        if deltoid_dest:
+            print(f"[Transfer unused] 三角肌整组→肩: {deltoid_dest}")
+
         total_transferred = 0
         for mesh in mesh_objects:
             for ubone in bones_to_transfer:
                 vg = mesh.vertex_groups.get(ubone.name)
                 if not vg:
                     continue
+                forced = deltoid_dest.get(ubone.name)
                 n = 0
                 for v in mesh.data.vertices:
                     for g in v.groups:
                         if g.group == vg.index and g.weight > 0.001:
-                            vert_pos = obj.matrix_world @ v.co
-                            nearest = min(valid_heads, key=lambda bh: (bh[1] - vert_pos).length)[0]
-                            tvg = mesh.vertex_groups.get(nearest.name)
+                            if forced:
+                                dest_name = forced
+                            else:
+                                vert_pos = obj.matrix_world @ v.co
+                                dest_name = min(valid_heads, key=lambda bh: (bh[1] - vert_pos).length)[0].name
+                            tvg = mesh.vertex_groups.get(dest_name)
                             if not tvg:
-                                tvg = mesh.vertex_groups.new(name=nearest.name)
+                                tvg = mesh.vertex_groups.new(name=dest_name)
                             tvg.add([v.index], g.weight, 'ADD')
                             n += 1
                             break
