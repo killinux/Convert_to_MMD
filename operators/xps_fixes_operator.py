@@ -612,18 +612,27 @@ def _detect_arm_deltoid(obj, meshes, candidates):
     倒进 腕(肩关节头最近) → 肩盖跟着上臂转。整组归 肩 = 忠实复用 XPS 三角肌权重、不切分
     (用户决定: 三角肌整组→肩)。判定: 质心沿 腕→ひじ 轴 t<0.5 且横向距离 < 一节上臂长。
     """
+    # 按拓扑(identify_skeleton)解析臂骨，而非依赖日文名：流水线第一趟 transfer(1.4)在
+    # complete_missing_bones 改名【之前】跑，此刻骨头仍是 XPS 原始名，硬查 左腕/左ひじ/左肩
+    # 会落空。identify 与名字无关，第一趟(三角肌顶点组完好)即可命中；路由到【肩骨当前名】，
+    # 之后 complete 改名时该顶点组连同骨头一起变成 左肩，权重随之归位。
+    try:
+        from ..skeleton_identifier import identify_skeleton
+        smap = identify_skeleton(obj.data)
+    except Exception:
+        smap = {}
     mw = obj.matrix_world
-    sides = []
-    for jp in ('左', '右'):
-        arm = obj.data.bones.get(f"{jp}腕")
-        el = obj.data.bones.get(f"{jp}ひじ")
-        sh = obj.data.bones.get(f"{jp}肩")
+    sides = []  # (origin, axis, L2, armlen, shoulder_bone_name)
+    for side, jp in (('left', '左'), ('right', '右')):
+        arm = obj.data.bones.get(smap.get(f"{side}_upper_arm_bone") or f"{jp}腕")
+        el = obj.data.bones.get(smap.get(f"{side}_lower_arm_bone") or f"{jp}ひじ")
+        sh = obj.data.bones.get(smap.get(f"{side}_shoulder_bone") or f"{jp}肩")
         if arm and el and sh:
             o = mw @ arm.head_local
             ax = (mw @ el.head_local) - o
             L2 = ax.length_squared
             if L2 > 1e-9:
-                sides.append((jp, o, ax, L2, L2 ** 0.5))
+                sides.append((o, ax, L2, L2 ** 0.5, sh.name))
     if not sides:
         return {}
     cand_names = {b.name for b in candidates}
@@ -655,18 +664,18 @@ def _detect_arm_deltoid(obj, meshes, candidates):
         if w <= 0:
             continue
         c = sw / w
-        best = None  # (lateral_dist, jp, t, armlen)
-        for jp, o, ax, L2, alen in sides:
+        best = None  # (lateral_dist, shoulder_name, t, armlen)
+        for o, ax, L2, alen, shname in sides:
             t = (c - o).dot(ax) / L2
             proj = o + ax * max(0.0, min(1.0, t))
             lat = (c - proj).length
             if best is None or lat < best[0]:
-                best = (lat, jp, t, alen)
-        lat, jp, t, alen = best
+                best = (lat, shname, t, alen)
+        lat, shname, t, alen = best
         # 三角肌：质心沿骨轴 0.05≤t≤0.55（上臂近端~中段）且横向 <半节上臂长（紧贴手臂）。
         # 排除：肩关节后方/上方的 头/颈/根(t<0)、肘侧捩骨(t>0.55)、横向远离的 胸/控制骨。
         if 0.05 <= t <= 0.55 and lat < 0.5 * alen:
-            dest[nm] = f"{jp}肩"
+            dest[nm] = shname
     return dest
 
 
