@@ -129,7 +129,14 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
 
     # ------------------------------------------------------------------
     def setup_weights(self, obj):
-        """沿 base 轴 5 段线性切分权重（守恒，不缩水）。"""
+        """沿 base 轴 5 段线性切分权重（守恒，不缩水）。
+
+        上臂(腕)：XPS 的 腕 顶点组已覆盖整段上臂，单独切分即可填满 腕捩1/2/3/主。
+        前臂(ひじ)：XPS 把前臂【远端半段】绑在了"手"骨(→手首)上，ひじ 顶点组只覆盖
+        肘侧半段。若只切分 ひじ，手捩(主)/手捩3 会拿不到权重，前臂远端完全不扭转 →
+        手一转就在前臂中点出现糖纸/塌陷。故前臂切分需 reclaim_group=手首，把 手首 落在
+        前臂段(沿 ひじ→手首 轴 t<reclaim 边界)的权重并入切分池，再按 τ 分给捩骨。
+        """
         mesh_objects = [o for o in bpy.context.scene.objects
                         if o.type == 'MESH' and o.parent == obj]
         for mesh in mesh_objects:
@@ -138,19 +145,38 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
                 self._split_segment(obj, mesh, vgroups, f"{side}腕",
                                     [f"{side}腕捩", f"{side}腕捩1", f"{side}腕捩2", f"{side}腕捩3"])
                 self._split_segment(obj, mesh, vgroups, f"{side}ひじ",
-                                    [f"{side}手捩", f"{side}手捩1", f"{side}手捩2", f"{side}手捩3"])
+                                    [f"{side}手捩", f"{side}手捩1", f"{side}手捩2", f"{side}手捩3"],
+                                    reclaim_group=f"{side}手首",
+                                    tau_lo=self.TAU_LO_FOREARM, tau_hi=self.TAU_HI_FOREARM)
 
     # 扭转目标曲线：沿骨轴 t∈[0,1] → 扭转比例 τ∈[0,1]
     # 肩侧 (t<TAU_LO) 不扭转；肘侧 (t>TAU_HI) 全扭转；中间平滑过渡。
+    # 上臂(腕)：默认 0.20/0.80（主腕捩落在肘端 t≈1.0，与目标 PMX 一致）。
     TAU_LO = 0.20
     TAU_HI = 0.80
+    # 前臂(ひじ)：主手捩落在腕端 t≈0.9（目标 PMX 标定：手捩1/2/3/主 峰值 t≈0.3/0.5/0.7/0.9）。
+    # 用更宽的 0.05/0.90 让远端权重沿 手捩2/3 渐变，避免 t≥0.8 全倒进主手捩。
+    TAU_LO_FOREARM = 0.05
+    TAU_HI_FOREARM = 0.90
 
-    def _split_segment(self, obj, mesh, vgroups, base_name, twist_names):
+    # reclaim：下游骨(手首)落在本段上的权重并入切分池的比例 ramp（沿本段轴 t）。
+    # t<=LO 全收（纯前臂段），t>=HI 不收（手掌段），中间线性过渡。按目标 PMX 标定：
+    # 手首 约在 t≈0.9 才介入前臂、t≈1.0 处与捩系统约 50/50。
+    RECLAIM_LO = 0.90
+    RECLAIM_HI = 1.10
+
+    def _split_segment(self, obj, mesh, vgroups, base_name, twist_names,
+                       reclaim_group=None, tau_lo=None, tau_hi=None):
         """沿骨轴把 base 权重按"扭转目标 τ"在相邻两根捩骨间线性插值分配。
 
         捩骨扭转档位: 腕=0, 捩1=0.25, 捩2=0.5, 捩3=0.75, 主捩=1.0。
         顶点 τ(t) 落在哪两档之间，就按比例分给那两根 → 平滑重叠、扭转量连续、权重守恒。
         这与参考 PMX 的捩骨权重分布一致，避免硬分段造成的折痕/扭曲。
+
+        reclaim_group（仅前臂用，传 手首）：XPS 把前臂远端绑在手骨上，base(ひじ) 顶点组
+        只覆盖肘侧半段。若不回收，手捩(主)/手捩3 拿不到权重、前臂远端不扭转。故把 手首
+        落在前臂段(t<RECLAIM_HI)的权重按 ramp 比例并入切分池一起按 τ 分配，并等量从 手首
+        扣除（手掌段 t>=RECLAIM_HI 不动）。
         """
         if base_name not in vgroups:
             return
@@ -159,6 +185,7 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
         for n in twist_names:
             if n not in vgroups:
                 vgroups.new(name=n)
+        rec_group = vgroups[reclaim_group] if (reclaim_group and reclaim_group in vgroups) else None
         # 扭转档位（升序）：(顶点组, 扭转比例)
         levels = [
             (base_group, 0.0),
@@ -178,21 +205,47 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
         if L < 1e-6:
             return
         axis_n = axis / L
-        span = max(self.TAU_HI - self.TAU_LO, 1e-6)
+        lo = self.TAU_LO if tau_lo is None else tau_lo
+        hi = self.TAU_HI if tau_hi is None else tau_hi
+        span = max(hi - lo, 1e-6)
+        rspan = max(self.RECLAIM_HI - self.RECLAIM_LO, 1e-6)
 
         for v in mesh.data.vertices:
             w = 0.0
+            wrec = 0.0
             for g in v.groups:
                 if g.group == base_group.index:
                     w = g.weight
-                    break
-            if w <= 0:
+                elif rec_group and g.group == rec_group.index:
+                    wrec = g.weight
+            if w <= 0 and wrec <= 0:
                 continue
-            base_group.remove([v.index])
 
             vw = mesh.matrix_world @ v.co
             t = (vw - head_w).dot(axis_n) / L
-            tau = max(0.0, min(1.0, (t - self.TAU_LO) / span))
+
+            # 回收下游骨在前臂段上的权重（ramp 比例）
+            rfrac = 0.0
+            if wrec > 0:
+                if t <= self.RECLAIM_LO:
+                    rfrac = 1.0
+                elif t < self.RECLAIM_HI:
+                    rfrac = (self.RECLAIM_HI - t) / rspan
+            pool = w + wrec * rfrac
+            if pool <= 1e-6:
+                continue
+
+            # 从源顶点组扣除已被纳入切分池的权重
+            if w > 0:
+                base_group.remove([v.index])
+            if rec_group and rfrac > 1e-6:
+                rem = wrec * (1.0 - rfrac)
+                if rem > 1e-6:
+                    rec_group.add([v.index], rem, 'REPLACE')
+                else:
+                    rec_group.remove([v.index])
+
+            tau = max(0.0, min(1.0, (t - lo) / span))
 
             # 找到 τ 落入的相邻两档 [k, k+1]，线性插值
             for k in range(len(levels) - 1):
@@ -201,11 +254,11 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
                 if (f0 <= tau <= f1) or (k == len(levels) - 2):
                     a = (tau - f0) / (f1 - f0) if f1 > f0 else 0.0
                     a = max(0.0, min(1.0, a))
-                    # 守恒：两档权重之和 == 原 base 权重 w；'ADD' 叠加到既有
-                    if (1.0 - a) * w > 1e-6:
-                        levels[k][0].add([v.index], (1.0 - a) * w, 'ADD')
-                    if a * w > 1e-6:
-                        levels[k + 1][0].add([v.index], a * w, 'ADD')
+                    # 守恒：两档权重之和 == 切分池 pool；'ADD' 叠加到既有
+                    if (1.0 - a) * pool > 1e-6:
+                        levels[k][0].add([v.index], (1.0 - a) * pool, 'ADD')
+                    if a * pool > 1e-6:
+                        levels[k + 1][0].add([v.index], a * pool, 'ADD')
                     break
 
 
