@@ -6,7 +6,12 @@ TWIST_SUB_INFLUENCE = {1: 0.25, 2: 0.50, 3: 0.75}
 
 
 class OBJECT_OT_add_twist_bone(bpy.types.Operator):
-    """对腕部和手部骨骼进行捩骨设置（统一走 mmd_tools 付与，不再建 _shadow_/_dummy_ 约束）"""
+    """对腕部和手部骨骼进行捩骨设置（统一走 mmd_tools 付与）。
+
+    子捩骨(腕捩1/2/3、手捩1/2/3)建为竖直朝上，与沿臂的主捩骨不对齐，使
+    第8.5步 apply_additional_transform 自动建 _dummy_/_shadow_ 中转链(与目标
+    PMX 同机制)——显示朝上而扭转正确。主捩骨沿臂、带 fixed_axis、VMD 直接驱动。
+    """
     bl_idname = "object.add_twist_bone"
     bl_label = "添加腕捩骨骼"
     bl_options = {'REGISTER', 'UNDO'}
@@ -44,15 +49,24 @@ class OBJECT_OT_add_twist_bone(bpy.types.Operator):
                 continue
             dirn = bone_vec.normalized()
             seg_len = max(length * 0.12, 1e-4)
-            roll = base_bone.roll  # 关键：所有捩骨与 base 同 roll，付与才不会扭歪
+            roll = base_bone.roll  # 主捩骨与 base 同 roll、同向（VMD 直接驱动 + fixed_axis）
 
             created = {}
             for i, tname in enumerate(twist_names):
                 tb = edit_bones.get(tname) or edit_bones.new(tname)
                 h = bone_head + bone_vec * self._POS[i]
                 tb.head = h
-                tb.tail = h + dirn * seg_len   # 与 base 同方向（共线）
-                tb.roll = roll                 # 与 base 同 roll
+                if i == 0:
+                    # 主捩骨：沿 base 轴（保留扭转轴方向，配合 fixed_axis）
+                    tb.tail = h + dirn * seg_len
+                    tb.roll = roll
+                else:
+                    # 子捩骨：竖直朝上(world +Z)，与目标 PMX 显示一致。与沿臂主捩骨不对齐，
+                    # 使第8.5步 apply_additional_transform 自动建 _dummy_/_shadow_ 中转
+                    # (mmd_tools __is_well_aligned 判定)：显示朝上而扭转仍正确。
+                    # align_roll((0,-1,0)) 复刻目标朝向 (x=+X, z=-Y)。
+                    tb.tail = h + Vector((0.0, 0.0, seg_len))
+                    tb.align_roll(Vector((0.0, -1.0, 0.0)))
                 tb.use_connect = False
                 tb.parent = base_bone
                 tb.use_deform = True
