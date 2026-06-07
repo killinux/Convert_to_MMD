@@ -604,11 +604,12 @@ class OBJECT_OT_snap_misaligned_bones(bpy.types.Operator):
 # ============================================================
 
 # 三角肌(肩盖)按位置分配到 肩/腕 的 ramp（沿 腕→ひじ 轴参数 t；t=0 上臂头/肩关节，1=肘）。
-# 上端(肩盖顶, t<=LO)整片归 肩；下端(t>=HI)归 腕基部，之间线性过渡——复刻目标 PMX 的
-# 肩↔腕 交界(目标在 t≈0.4 处 肩 归零、腕 接管)。下端落在 腕 基部低 t 段，几乎不参与
-# 腕捩 扭转(setup_weights TAU_LO=0.20)，与目标一致、不糖纸。
-DELTOID_SH_T_LO = 0.05
-DELTOID_SH_T_HI = 0.40
+# 上端(肩盖顶, t<=LO)整片归 肩；下端(t>=HI)归 腕基部，之间线性过渡。HI=0.25(腕→ひじ轴)
+# 经远程标定：使交界沿 肩→ひじ 轴在 ~t0.4 处 肩↔腕 交接，与目标 PMX 几乎重合
+# (t0.4 处 肩≈腕≈8%、t0.5 肩归零)。下端落在 腕 基部低 t 段，几乎不参与 腕捩 扭转
+# (setup_weights TAU_LO=0.20)，与目标一致、不糖纸。
+DELTOID_SH_T_LO = 0.0
+DELTOID_SH_T_HI = 0.25
 
 
 def deltoid_shoulder_fraction(t):
