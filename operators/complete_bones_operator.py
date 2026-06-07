@@ -648,8 +648,68 @@ def _redistribute_palm_to_metacarpals(obj):
     return total
 
 
+# 拇指根渗出修正常量：親指０(拇指掌骨)落在拇指根之后(沿 親指０→親指１ 轴 u<0)的权重
+# 视为渗到手腕内侧，按 u 渐变还给 手首。U_HI 以上保留(拇指本体/thenar)，U_LO 以下全还。
+# 标定自目标 PMX：目标 親指０ 仅 ~1% 在拇指根之后，XPS 源高达 29–41%(拇指弯曲会拉扯腕皮)。
+THUMB_U_HI = -0.1
+THUMB_U_LO = -0.5
+
+
+def _debleed_thumb_to_wrist(obj):
+    """把 親指０ 渗到手腕内侧的权重还给 手首（守恒，逐顶点总权重不变）。
+
+    XPS 把拇指掌骨绑得过宽，親指０ 顶点组有 29–41% 的权重落在拇指根之后的手腕上
+    (目标仅 ~1%)。沿拇指轴 u(0=親指０头,1=親指１)把 u<THUMB_U_HI 的 親指０ 权重按渐变
+    转给 手首。在掌部分配前执行。返回受影响顶点数。"""
+    meshes = [m for m in bpy.data.objects
+              if m.type == 'MESH' and any(md.type == 'ARMATURE' and md.object == obj for md in m.modifiers)]
+    mw = obj.matrix_world
+    span = max(THUMB_U_HI - THUMB_U_LO, 1e-6)
+    total = 0
+    for side in ("左", "右"):
+        b0 = obj.data.bones.get(f"{side}親指０")
+        b1 = obj.data.bones.get(f"{side}親指１")
+        if not b0 or not b1 or not obj.data.bones.get(f"{side}手首"):
+            continue
+        A = mw @ b0.head_local
+        axis = (mw @ b1.head_local) - A
+        Lt = axis.length
+        if Lt < 1e-6:
+            continue
+        axn = axis / Lt
+        for m in meshes:
+            t0 = m.vertex_groups.get(f"{side}親指０")
+            if not t0:
+                continue
+            wf = m.vertex_groups.get(f"{side}手首") or m.vertex_groups.new(name=f"{side}手首")
+            mmw = m.matrix_world
+            plans = []
+            for v in m.data.vertices:
+                w = 0.0
+                for g in v.groups:
+                    if g.group == t0.index:
+                        w = g.weight
+                        break
+                if w <= 1e-6:
+                    continue
+                u = ((mmw @ v.co) - A).dot(axn) / Lt
+                if u >= THUMB_U_HI:
+                    continue
+                moved = w * min(1.0, (THUMB_U_HI - u) / span)
+                if moved > 1e-6:
+                    plans.append((v.index, w - moved, moved))
+            for vidx, neww, moved in plans:
+                if neww > 1e-6:
+                    t0.add([vidx], neww, 'REPLACE')
+                else:
+                    t0.remove([vidx])
+                wf.add([vidx], moved, 'ADD')
+                total += 1
+    return total
+
+
 class OBJECT_OT_fix_palm_weights(bpy.types.Operator):
-    """把 手首 的手掌段权重分配到 指０ 掌骨，复刻目标 PMX 的手掌分布。
+    """手部权重修正：先把 親指０ 渗到手腕的权重还给 手首，再把 手首 手掌段分给 指０ 掌骨，复刻目标 PMX。
 
     XPS 源没有掌骨权重，补全骨骼建的 人指０/中指０/薬指０/小指０ 为空 pass-through 骨，
     导致整个手掌刚性跟随 手首。本步骤在 add_twist（手首前臂侧回收）之后执行（流程 7.5），
@@ -669,11 +729,12 @@ class OBJECT_OT_fix_palm_weights(bpy.types.Operator):
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
         try:
+            nt = _debleed_thumb_to_wrist(obj)
             n = _redistribute_palm_to_metacarpals(obj)
         except Exception as e:
-            self.report({'ERROR'}, f"掌部权重分配失败: {e}")
+            self.report({'ERROR'}, f"手部权重修正失败: {e}")
             return {'CANCELLED'}
-        self.report({'INFO'}, f"掌部权重分给掌骨: {n} 顶点")
+        self.report({'INFO'}, f"手部权重修正: 拇指渗出 {nt} 顶点→手首, 掌部 {n} 顶点→掌骨")
         return {'FINISHED'}
 
 
