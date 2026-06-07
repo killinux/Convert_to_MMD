@@ -559,12 +559,132 @@ class OBJECT_OT_fix_shoulder_weights(bpy.types.Operator):
         return {'FINISHED'}
 
 
+# 掌部权重重分配常量（按目标 PMX 手掌剖面标定）。
+# 沿 手首→中指 的手深 d（0=腕关节，1=中指根）：d<LO 全留 手首，d>HI 全归掌骨，
+# 之间线性退让。横向用「点到各指 指０→指１ 线段距离」的反 P 次方在四指间软混合。
+PALM_D_LO = 0.10
+PALM_D_HI = 0.80
+PALM_LATERAL_POW = 2
+PALM_FINGERS = ("人指", "中指", "薬指", "小指")
+
+
+def _pt_seg_dist(p, a, b):
+    ab = b - a
+    L2 = ab.length_squared
+    if L2 < 1e-12:
+        return (p - a).length
+    t = max(0.0, min(1.0, (p - a).dot(ab) / L2))
+    return (p - (a + ab * t)).length
+
+
+def _redistribute_palm_to_metacarpals(obj):
+    """把 手首 顶点组落在手掌段的权重按就近手指列分给 指０ 掌骨（人指０/中指０/薬指０/小指０）。
+
+    XPS 源无掌骨顶点组，complete_missing_bones 建的 指０ 为 pass-through 空骨 → 手掌权重
+    全压在 手首 上、整掌随手腕刚性转。本步骤复刻目标 PMX 的手掌分布：沿手深 d 让 手首
+    退让、掌骨接管（守恒，逐顶点总权重不变），横向在相邻掌骨间按距离软混合避免硬缝。
+    亲指(親指０)已由 XPS 绑定，不参与。返回受影响顶点数。"""
+    meshes = [m for m in bpy.data.objects
+              if m.type == 'MESH' and any(md.type == 'ARMATURE' and md.object == obj for md in m.modifiers)]
+    mw = obj.matrix_world
+    total = 0
+    for side in ("左", "右"):
+        bw = obj.data.bones.get(f"{side}手首")
+        bmid = obj.data.bones.get(f"{side}中指１")
+        cols = [(f, obj.data.bones.get(f"{side}{f}０")) for f in PALM_FINGERS]
+        cols = [(f, b) for f, b in cols if b]
+        if not bw or not bmid or len(cols) < 2:
+            continue
+        W = mw @ bw.head_local
+        H = (mw @ bmid.head_local) - W
+        Hlen = H.length
+        if Hlen < 1e-6:
+            continue
+        Hn = H / Hlen
+        rays = [(f, mw @ b.head_local, mw @ obj.data.bones[f"{side}{f}１"].head_local)
+                for f, b in cols if obj.data.bones.get(f"{side}{f}１")]
+        if len(rays) < 2:
+            continue
+        for m in meshes:
+            wvg = m.vertex_groups.get(f"{side}手首")
+            if not wvg:
+                continue
+            mvg = {f: (m.vertex_groups.get(f"{side}{f}０") or m.vertex_groups.new(name=f"{side}{f}０"))
+                   for f, _, _ in rays}
+            mmw = m.matrix_world
+            plans = []
+            for v in m.data.vertices:
+                w = 0.0
+                for g in v.groups:
+                    if g.group == wvg.index:
+                        w = g.weight
+                        break
+                if w <= 1e-6:
+                    continue
+                vp = mmw @ v.co
+                d = (vp - W).dot(Hn) / Hlen
+                if d <= PALM_D_LO:
+                    continue
+                frac = min(1.0, (d - PALM_D_LO) / (PALM_D_HI - PALM_D_LO))
+                if frac <= 1e-4:
+                    continue
+                moved = w * frac
+                wt = {}
+                sw = 0.0
+                for f, a, b in rays:
+                    ww = 1.0 / (_pt_seg_dist(vp, a, b) ** PALM_LATERAL_POW + 1e-9)
+                    wt[f] = ww
+                    sw += ww
+                plans.append((v.index, w - moved, {f: moved * wt[f] / sw for f in wt}))
+            for vidx, new_w, add in plans:
+                if new_w > 1e-6:
+                    wvg.add([vidx], new_w, 'REPLACE')
+                else:
+                    wvg.remove([vidx])
+                for f, aw in add.items():
+                    if aw > 1e-6:
+                        mvg[f].add([vidx], aw, 'ADD')
+                total += 1
+    return total
+
+
+class OBJECT_OT_fix_palm_weights(bpy.types.Operator):
+    """把 手首 的手掌段权重分配到 指０ 掌骨，复刻目标 PMX 的手掌分布。
+
+    XPS 源没有掌骨权重，补全骨骼建的 人指０/中指０/薬指０/小指０ 为空 pass-through 骨，
+    导致整个手掌刚性跟随 手首。本步骤在 add_twist（手首前臂侧回收）之后执行（流程 7.5），
+    对最终 手首 的手掌段做守恒重分配。"""
+    bl_idname = "object.fix_palm_weights"
+    bl_label = "掌部权重分给掌骨"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        obj = context.active_object
+        if obj and obj.type != 'ARMATURE':
+            obj = next((o for o in bpy.data.objects
+                        if o.type == 'ARMATURE' and 'backup' not in o.name.lower()), None)
+        if not obj or obj.type != 'ARMATURE':
+            self.report({'ERROR'}, "未找到骨架")
+            return {'CANCELLED'}
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        try:
+            n = _redistribute_palm_to_metacarpals(obj)
+        except Exception as e:
+            self.report({'ERROR'}, f"掌部权重分配失败: {e}")
+            return {'CANCELLED'}
+        self.report({'INFO'}, f"掌部权重分给掌骨: {n} 顶点")
+        return {'FINISHED'}
+
+
 def register():
     bpy.utils.register_class(OBJECT_OT_complete_missing_bones)
     bpy.utils.register_class(OBJECT_OT_fix_shoulder_weights)
+    bpy.utils.register_class(OBJECT_OT_fix_palm_weights)
 
 
 def unregister():
+    bpy.utils.unregister_class(OBJECT_OT_fix_palm_weights)
     bpy.utils.unregister_class(OBJECT_OT_fix_shoulder_weights)
     bpy.utils.unregister_class(OBJECT_OT_complete_missing_bones)
 

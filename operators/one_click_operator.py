@@ -29,6 +29,8 @@ PIPELINE_PRE_D = [
 PIPELINE_POST_D = [
     ("6", "object.add_leg_d_bones", "添加腿部 D 骨", False),
     ("7", "object.add_twist_bone", "添加捩骨", False),
+    # 7.5 在 add_twist 之后：先让捩骨回收 手首 前臂侧权重，再把剩余手掌段分给掌骨。
+    ("7.5", "object.fix_palm_weights", "掌部权重分给掌骨", False),
     ("8", "object.add_shoulder_p_bones", "添加肩P骨", False),
 ]
 
