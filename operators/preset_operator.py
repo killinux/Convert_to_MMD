@@ -533,6 +533,22 @@ class OBJECT_OT_use_mmd_tools_convert(bpy.types.Operator):
                 )
                 return {'CANCELLED'}
 
+        # 去重 armature 修改器：XNALaraMesh 导入已给网格加了一个 armature 修改器，
+        # mmd_tools 的 convert_to_mmd_model 又加一个 → 同一网格挂两个、指向同一骨架，
+        # 形成双重蒙皮（rest 姿势恒等看似正常，一旦有姿势就把骨骼变换叠加两次 → 顶点炸飞）。
+        # 每个网格只保留第一个指向该骨架的 armature 修改器。
+        removed = 0
+        for m in bpy.data.objects:
+            if m.type != 'MESH':
+                continue
+            arm_mods = [md for md in m.modifiers
+                        if md.type == 'ARMATURE' and md.object == obj]
+            for md in arm_mods[1:]:
+                m.modifiers.remove(md)
+                removed += 1
+        if removed:
+            print(f"[mmd_convert] 移除 {removed} 个重复 armature 修改器（防止双重蒙皮炸网格）")
+
         # 恢复原始选择状态
         context.view_layer.objects.active = obj
         obj.select_set(True)
