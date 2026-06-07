@@ -603,14 +603,30 @@ class OBJECT_OT_snap_misaligned_bones(bpy.types.Operator):
 # Transfer unused bone weights to nearest valid bone
 # ============================================================
 
-def _detect_arm_deltoid(obj, meshes, candidates):
-    """识别"上臂三角肌(肩盖)"辅助骨：权重质心落在上臂近端半段、且贴近手臂轴的
-    unused/辅助骨(如 XPS 的 xtra07pp)。返回 {bone_name: 肩骨名}，供 transfer_unused
-    把它们【整组】路由到该侧 肩。
+# 三角肌(肩盖)按位置分配到 肩/腕 的 ramp（沿 腕→ひじ 轴参数 t；t=0 上臂头/肩关节，1=肘）。
+# 上端(肩盖顶, t<=LO)整片归 肩；下端(t>=HI)归 腕基部，之间线性过渡——复刻目标 PMX 的
+# 肩↔腕 交界(目标在 t≈0.4 处 肩 归零、腕 接管)。下端落在 腕 基部低 t 段，几乎不参与
+# 腕捩 扭转(setup_weights TAU_LO=0.20)，与目标一致、不糖纸。
+DELTOID_SH_T_LO = 0.05
+DELTOID_SH_T_HI = 0.40
 
-    XPS 把肩盖三角肌绑在独立辅助骨上，其权重质心在上臂近端；若按"最近骨头"转移会整片
-    倒进 腕(肩关节头最近) → 肩盖跟着上臂转。整组归 肩 = 忠实复用 XPS 三角肌权重、不切分
-    (用户决定: 三角肌整组→肩)。判定: 质心沿 腕→ひじ 轴 t<0.5 且横向距离 < 一节上臂长。
+
+def deltoid_shoulder_fraction(t):
+    """三角肌某顶点(沿 腕→ひじ 轴参数 t)应归 肩 的比例，余下归 腕。"""
+    if t <= DELTOID_SH_T_LO:
+        return 1.0
+    if t >= DELTOID_SH_T_HI:
+        return 0.0
+    return (DELTOID_SH_T_HI - t) / (DELTOID_SH_T_HI - DELTOID_SH_T_LO)
+
+
+def _detect_arm_deltoid(obj, meshes, candidates):
+    """识别"上臂三角肌(肩盖)"辅助骨(如 XPS 的 xtra07/xtra07pp)，返回
+    {bone_name: (肩骨名, 腕骨名, 轴原点, 轴向量, L2)}，供 transfer_unused 按位置沿
+    腕→ひじ 轴把它们分配到 肩(上端)/腕(下端)——复刻目标 PMX 的肩↔腕交界。
+
+    早期(s3)整组归 肩，会让 肩 权重过重、拖到上臂中段(t≈0.6)，与目标(t≈0.4 处 肩
+    归零、腕 接管)不符。改为按位置分。判定仍按质心 0.05≤t≤0.55、横向近轴。
     """
     # 按拓扑(identify_skeleton)解析臂骨，而非依赖日文名：流水线第一趟 transfer(1.4)在
     # complete_missing_bones 改名【之前】跑，此刻骨头仍是 XPS 原始名，硬查 左腕/左ひじ/左肩
@@ -622,7 +638,7 @@ def _detect_arm_deltoid(obj, meshes, candidates):
     except Exception:
         smap = {}
     mw = obj.matrix_world
-    sides = []  # (origin, axis, L2, armlen, shoulder_bone_name)
+    sides = []  # (origin, axis, L2, armlen, shoulder_name, arm_name)
     for side, jp in (('left', '左'), ('right', '右')):
         arm = obj.data.bones.get(smap.get(f"{side}_upper_arm_bone") or f"{jp}腕")
         el = obj.data.bones.get(smap.get(f"{side}_lower_arm_bone") or f"{jp}ひじ")
@@ -632,7 +648,7 @@ def _detect_arm_deltoid(obj, meshes, candidates):
             ax = (mw @ el.head_local) - o
             L2 = ax.length_squared
             if L2 > 1e-9:
-                sides.append((o, ax, L2, L2 ** 0.5, sh.name))
+                sides.append((o, ax, L2, L2 ** 0.5, sh.name, arm.name))
     if not sides:
         return {}
     cand_names = {b.name for b in candidates}
@@ -664,18 +680,18 @@ def _detect_arm_deltoid(obj, meshes, candidates):
         if w <= 0:
             continue
         c = sw / w
-        best = None  # (lateral_dist, shoulder_name, t, armlen)
-        for o, ax, L2, alen, shname in sides:
+        best = None  # (lat, shoulder_name, t, armlen, arm_name, o, ax, L2)
+        for o, ax, L2, alen, shname, armname in sides:
             t = (c - o).dot(ax) / L2
             proj = o + ax * max(0.0, min(1.0, t))
             lat = (c - proj).length
             if best is None or lat < best[0]:
-                best = (lat, shname, t, alen)
-        lat, shname, t, alen = best
+                best = (lat, shname, t, alen, armname, o, ax, L2)
+        lat, shname, t, alen, armname, o, ax, L2 = best
         # 三角肌：质心沿骨轴 0.05≤t≤0.55（上臂近端~中段）且横向 <半节上臂长（紧贴手臂）。
         # 排除：肩关节后方/上方的 头/颈/根(t<0)、肘侧捩骨(t>0.55)、横向远离的 胸/控制骨。
         if 0.05 <= t <= 0.55 and lat < 0.5 * alen:
-            dest[nm] = shname
+            dest[nm] = (shname, armname, o, ax, L2)
     return dest
 
 
@@ -770,10 +786,15 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
 
         valid_heads = [(b, obj.matrix_world @ b.head_local) for b in valid_deform_bones]
 
-        # 三角肌(肩盖)忠实路由：整组归该侧 肩(见 _detect_arm_deltoid)，不按最近骨头打散。
+        # 三角肌(肩盖)按位置分配到 肩/腕(见 _detect_arm_deltoid)：上端→肩、下端→腕基部，
+        # 复刻目标交界；不再整组→肩、也不按最近骨头整片倒进腕。
         deltoid_dest = _detect_arm_deltoid(obj, mesh_objects, bones_to_transfer)
         if deltoid_dest:
-            print(f"[Transfer unused] 三角肌整组→肩: {deltoid_dest}")
+            print(f"[Transfer unused] 三角肌按位置分肩/腕: { {k: (v[0], v[1]) for k, v in deltoid_dest.items()} }")
+
+        def _add(mesh, dest_name, vidx, wt):
+            tvg = mesh.vertex_groups.get(dest_name) or mesh.vertex_groups.new(name=dest_name)
+            tvg.add([vidx], wt, 'ADD')
 
         total_transferred = 0
         for mesh in mesh_objects:
@@ -787,14 +808,18 @@ class OBJECT_OT_transfer_unused_weights(bpy.types.Operator):
                     for g in v.groups:
                         if g.group == vg.index and g.weight > 0.001:
                             if forced:
-                                dest_name = forced
+                                sh_name, arm_name, o, ax, L2 = forced
+                                vert_pos = obj.matrix_world @ v.co
+                                t = (vert_pos - o).dot(ax) / L2
+                                sf = deltoid_shoulder_fraction(t)
+                                if sf > 1e-6:
+                                    _add(mesh, sh_name, v.index, g.weight * sf)
+                                if sf < 1.0 - 1e-6:
+                                    _add(mesh, arm_name, v.index, g.weight * (1.0 - sf))
                             else:
                                 vert_pos = obj.matrix_world @ v.co
                                 dest_name = min(valid_heads, key=lambda bh: (bh[1] - vert_pos).length)[0].name
-                            tvg = mesh.vertex_groups.get(dest_name)
-                            if not tvg:
-                                tvg = mesh.vertex_groups.new(name=dest_name)
-                            tvg.add([v.index], g.weight, 'ADD')
+                                _add(mesh, dest_name, v.index, g.weight)
                             n += 1
                             break
                 if n > 0:
